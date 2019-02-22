@@ -97,6 +97,9 @@ if [ $? != 0 ]; then echo "ERROR"; exit; fi
 sudo cp $ANDROID_BUILD_TOP/vendor/brcm/rpi3/proprietary/boot/* /mnt
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
+sudo cp $ANDROID_BUILD_TOP/device/rpiorg/rpi3/boot/* /mnt
+if [ $? != 0 ]; then echo "ERROR"; exit; fi
+
 sudo cp ${ANDROID_PRODUCT_OUT}/ramdisk.img /mnt
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
