@@ -67,14 +67,14 @@ if version_gt $SFDISK_VERSION "2.26"; then
      echo "sfdisk uses new syntax"
 	sudo sfdisk /dev/${DRIVE} << EOF
 ,64M,0x0c,*
-,768M,,,
+,1024M,,,
 ,256M,,,
 ,256M,,,
 EOF
 else
 	sudo sfdisk --unit M /dev/${DRIVE} << EOF
 ,64,0x0c,*
-,768,,,
+,1024,,,
 ,256,,,
 ,256,,,
 EOF
