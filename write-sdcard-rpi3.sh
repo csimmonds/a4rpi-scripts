@@ -3,7 +3,8 @@
 function version_gt() { test "$(echo "$@" | tr " " "\n" | sort -V | head -n 1)" != "$1"; }
 
 # Format an SD card for AOSP on RPi3
-KERNELDIR=kernel/brcm/rpi3
+KERNELDIR=kernel/rpi
+# KERNELDIR=android_kernel_brcm_rpi3
 
 if [ -z ${ANDROID_PRODUCT_OUT} ]; then
 	echo "You must run lunch first"
@@ -18,7 +19,7 @@ fi
 
 DRIVE=$1
 
-if [ -z $TARGET_PRODUCT ]; then
+if [ -z ${TARGET_PRODUCT} ]; then
 	echo "Please run 'lunch' first"
 	exit
 fi
@@ -40,46 +41,90 @@ fi
 if [ $DRIVE == "mmcblk0" ]; then
 	sudo umount /dev/${DRIVE}*
 	BOOT_PART=/dev/${DRIVE}p1
-	SYSTEM_PART=/dev/${DRIVE}p2
-	VENDOR_PART=/dev/${DRIVE}p3
-	USER_PART=/dev/${DRIVE}p4
+	SYSTEM_PART=/dev/${DRIVE}p3
+	VENDOR_PART=/dev/${DRIVE}p4
+	USER_PART=/dev/${DRIVE}p5
 else
 	sudo umount /dev/${DRIVE}[1-9]
 	BOOT_PART=/dev/${DRIVE}1
-	SYSTEM_PART=/dev/${DRIVE}2
-	VENDOR_PART=/dev/${DRIVE}3
-	USER_PART=/dev/${DRIVE}4
+	SYSTEM_PART=/dev/${DRIVE}3
+	VENDOR_PART=/dev/${DRIVE}4
+	USER_PART=/dev/${DRIVE}5
 fi
 
-# Overwite existing partiton table with zeros
-sudo dd if=/dev/zero of=/dev/${DRIVE} bs=1M count=10
-if [ $? -ne 0 ]; then echo "Error: dd"; exit 1; fi
+sleep 2
 
-# Create 4 primary partitons on the sd card
-#  1: boot:   FAT32, 64 MiB, boot flag
-#  2: system: Linux, 768 MiB
-#  3: vendor: Linux, 128 MiB
-#  4: data:   Linux, 128 MiB
+echo "Zap existing partition tables"
+sudo sgdisk --zap-all /dev/${DRIVE}
+# Ignore errors here: sgdisk fails if the GPT is damaged *before* erasing it
+# if [ $? -ne 0 ]; then echo "Error: sgdisk"; exit 1; fi
 
-# Note that the formatting of parameters changed slightly v2.26
-SFDISK_VERSION=`sfdisk --version | awk '{print $4}'`
-if version_gt $SFDISK_VERSION "2.26"; then
-     echo "sfdisk uses new syntax"
-	sudo sfdisk /dev/${DRIVE} << EOF
-,64M,0x0c,*
-,1024M,,,
-,256M,,,
-,256M,,,
+# Create 5 partitions
+# 1   64 MiB  boot
+# 2   64 MiB  frp
+# 3 1024 MiB  system
+# 4  256 MiB  vendor
+# 5  512 MiB  userdata
+
+echo "Writing GPT"
+sudo gdisk /dev/${DRIVE} << EOF 2>&1 > /dev/null
+n
+1
+
++64M
+
+c
+boot
+n
+2
+
++64M
+
+c
+2
+frp
+n
+3
+
++1024M
+
+c
+3
+system
+n
+4
+
++256M
+
+c
+4
+vendor
+n
+5
+
++512M
+
+c
+5
+userdata
+w
+y
 EOF
-else
-	sudo sfdisk --unit M /dev/${DRIVE} << EOF
-,64,0x0c,*
-,1024,,,
-,256,,,
-,256,,,
+if [ $? -ne 0 ]; then echo "Error: gdisk"; exit 1; fi
+
+echo "Writing MBR"
+sudo gdisk /dev/${DRIVE} << EOF 2>&1 > /dev/null
+r
+h
+1
+N
+06
+Y
+N
+w
+y
 EOF
-fi
-if [ $? -ne 0 ]; then echo "Error: sdfisk"; exit 1; fi
+if [ $? -ne 0 ]; then echo "Error: gdisk"; exit 1; fi
 
 # Format p1 with FAT32
 sudo mkfs.vfat -F 16 -n boot ${BOOT_PART}
@@ -88,30 +133,27 @@ if [ $? -ne 0 ]; then echo "Error: mkfs.vfat"; exit 1; fi
 
 # Copy boot files
 echo "Mounting $BOOT_PART"
-sudo mount $BOOT_PART /mnt
+sudo mount ${BOOT_PART} /mnt
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
-#sudo cp $ANDROID_BUILD_TOP/device/rpiorg/rpi3/config.txt /mnt
-#if [ $? != 0 ]; then echo "ERROR"; exit; fi
-
-sudo cp $ANDROID_BUILD_TOP/vendor/brcm/rpi3/proprietary/boot/* /mnt
+sudo mkimage -A arm -T script -O linux -d ${ANDROID_BUILD_TOP}/device/rpiorg/rpi3/boot/boot.scr.txt /mnt/boot.scr
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
-sudo cp $ANDROID_BUILD_TOP/device/rpiorg/rpi3/boot/* /mnt
+sudo cp ${ANDROID_BUILD_TOP}/u-boot/u-boot.bin /mnt
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
-sudo cp ${ANDROID_PRODUCT_OUT}/ramdisk.img /mnt
+sudo cp ${ANDROID_BUILD_TOP}/device/rpiorg/rpi3/boot/* /mnt
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
-sudo cp $ANDROID_BUILD_TOP/${KERNELDIR}/arch/arm/boot/zImage /mnt
+sudo cp ${ANDROID_PRODUCT_OUT}/boot.img /mnt
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
-sudo cp $ANDROID_BUILD_TOP/${KERNELDIR}/arch/arm/boot/dts/*.dtb /mnt
+sudo cp ${ANDROID_BUILD_TOP}/${KERNELDIR}/arch/arm/boot/dts/*.dtb /mnt
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
 sudo mkdir /mnt/overlays
 
-sudo cp $ANDROID_BUILD_TOP/${KERNELDIR}/arch/arm/boot/dts/overlays/*.dtbo /mnt/overlays
+sudo cp ${ANDROID_BUILD_TOP}/${KERNELDIR}/arch/arm/boot/dts/overlays/*.dtbo /mnt/overlays
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 
 sync
@@ -124,20 +166,29 @@ bmaptool create -o ${ANDROID_PRODUCT_OUT}/vendor.img.bmap ${ANDROID_PRODUCT_OUT}
 
 # Copy disk images
 echo "Writing system"
-sudo bmaptool copy ${ANDROID_PRODUCT_OUT}/system.img $SYSTEM_PART
+sudo bmaptool copy ${ANDROID_PRODUCT_OUT}/system.img ${SYSTEM_PART}
 #sudo dd if=${ANDROID_PRODUCT_OUT}/system.img of=$SYSTEM_PART bs=1M
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 sudo e2label $SYSTEM_PART system
-echo "Writing userdata"
-sudo bmaptool copy ${ANDROID_PRODUCT_OUT}/userdata.img $USER_PART
-#sudo dd if=${ANDROID_PRODUCT_OUT}/userdata.img of=$USER_PART bs=1M
-if [ $? != 0 ]; then echo "ERROR"; exit; fi
-sudo e2label $USER_PART userdata
 echo "Writing vendor"
-sudo bmaptool copy ${ANDROID_PRODUCT_OUT}/vendor.img $VENDOR_PART
+sudo bmaptool copy ${ANDROID_PRODUCT_OUT}/vendor.img ${VENDOR_PART}
 #sudo dd if=${ANDROID_PRODUCT_OUT}/vendor.img of=$VENDOR_PART bs=1M
 if [ $? != 0 ]; then echo "ERROR"; exit; fi
 sudo e2label $VENDOR_PART vendor
+echo "Writing userdata"
+sudo bmaptool copy ${ANDROID_PRODUCT_OUT}/userdata.img ${USER_PART}
+#sudo dd if=${ANDROID_PRODUCT_OUT}/userdata.img of=$USER_PART bs=1M
+if [ $? != 0 ]; then echo "ERROR"; exit; fi
+sudo e2label $USER_PART userdata
+
+echo "Copying updated ld.config"
+sudo mount ${SYSTEM_PART} /mnt
+sudo cp ${ANDROID_BUILD_TOP}/device/rpiorg/rpi3/ld.config.29.txt-hacked /mnt/system/etc/ld.config.29.txt
+sync
+sudo umount /mnt
+
+# Also put a copy in $OUT so that adb sync doesn't overwrite it
+cp ${ANDROID_BUILD_TOP}/device/rpiorg/rpi3/ld.config.29.txt-hacked $OUT/system/etc/ld.config.29.txt
 
 echo "SUCCESS! Andrdoid4RPi installed on the uSD card. Enjoy"
 
